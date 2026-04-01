@@ -488,7 +488,7 @@ pub fn render_slash_command_help() -> String {
     let mut lines = vec![
         "Slash commands".to_string(),
         "  Tab completes commands inside the REPL.".to_string(),
-        "  [resume] works with --resume SESSION.json.".to_string(),
+        "  [resume] = also available via claw --resume SESSION.json".to_string(),
     ];
 
     for category in [
@@ -2108,7 +2108,7 @@ mod tests {
     #[test]
     fn renders_help_from_shared_specs() {
         let help = render_slash_command_help();
-        assert!(help.contains("works with --resume SESSION.json"));
+        assert!(help.contains("available via claw --resume SESSION.json"));
         assert!(help.contains("Core flow"));
         assert!(help.contains("Workspace & memory"));
         assert!(help.contains("Sessions & output"));

@@ -1015,22 +1015,22 @@ fn run_repl(
     loop {
         match editor.read_line()? {
             input::ReadOutcome::Submit(input) => {
-                let trimmed = input.trim().to_string();
+                let trimmed = input.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-                if matches!(trimmed.as_str(), "/exit" | "/quit") {
+                if matches!(trimmed, "/exit" | "/quit") {
                     cli.persist_session()?;
                     break;
                 }
-                if let Some(command) = SlashCommand::parse(&trimmed) {
+                if let Some(command) = SlashCommand::parse(trimmed) {
                     if cli.handle_repl_command(command)? {
                         cli.persist_session()?;
                     }
                     continue;
                 }
-                editor.push_history(input);
-                cli.run_turn(&trimmed)?;
+                editor.push_history(&input);
+                cli.run_turn(&input)?;
             }
             input::ReadOutcome::Cancel => {}
             input::ReadOutcome::Exit => {
@@ -1350,7 +1350,7 @@ impl LiveCli {
                 false
             }
             SlashCommand::Unknown(name) => {
-                eprintln!("{}", render_unknown_slash_command(&name));
+                eprintln!("{}", render_unknown_repl_command(&name));
                 false
             }
         })
@@ -2007,13 +2007,29 @@ fn append_slash_command_suggestions(lines: &mut Vec<String>, name: &str) {
     );
 }
 
-fn render_unknown_slash_command(name: &str) -> String {
+fn render_unknown_repl_command(name: &str) -> String {
     let mut lines = vec![
         "Unknown slash command".to_string(),
         format!("  Command          /{name}"),
     ];
-    append_slash_command_suggestions(&mut lines, name);
+    append_repl_command_suggestions(&mut lines, name);
     lines.join("\n")
+}
+
+fn append_repl_command_suggestions(lines: &mut Vec<String>, name: &str) {
+    let suggestions = suggest_repl_commands(name);
+    if suggestions.is_empty() {
+        lines.push("  Try              /help shows the full slash command map".to_string());
+        return;
+    }
+
+    lines.push("  Try              /help shows the full slash command map".to_string());
+    lines.push("Suggestions".to_string());
+    lines.extend(
+        suggestions
+            .into_iter()
+            .map(|suggestion| format!("  {suggestion}")),
+    );
 }
 
 fn render_mode_unavailable(command: &str, label: &str) -> String {
@@ -3277,8 +3293,68 @@ fn slash_command_completion_candidates() -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    candidates.push("/vim".to_string());
+    candidates.extend([
+        String::from("/vim"),
+        String::from("/exit"),
+        String::from("/quit"),
+    ]);
+    candidates.sort();
+    candidates.dedup();
     candidates
+}
+
+fn suggest_repl_commands(name: &str) -> Vec<String> {
+    let normalized = name.trim().trim_start_matches('/').to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranked = slash_command_completion_candidates()
+        .into_iter()
+        .filter_map(|candidate| {
+            let raw = candidate.trim_start_matches('/').to_ascii_lowercase();
+            let distance = edit_distance(&normalized, &raw);
+            let prefix_match = raw.starts_with(&normalized) || normalized.starts_with(&raw);
+            let near_match = distance <= 2;
+            (prefix_match || near_match).then_some((distance, candidate))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort();
+    ranked.dedup_by(|left, right| left.1 == right.1);
+    ranked
+        .into_iter()
+        .map(|(_, candidate)| candidate)
+        .take(3)
+        .collect()
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    if left == right {
+        return 0;
+    }
+    if left.is_empty() {
+        return right.chars().count();
+    }
+    if right.is_empty() {
+        return left.chars().count();
+    }
+
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right_chars.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right_chars.len() + 1];
+
+    for (left_index, left_char) in left.chars().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_char) in right_chars.iter().enumerate() {
+            let substitution_cost = usize::from(left_char != *right_char);
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + substitution_cost);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    previous[right_chars.len()]
 }
 
 fn format_tool_call_start(name: &str, input: &str) -> String {
@@ -4038,9 +4114,10 @@ mod tests {
         format_status_report, format_tool_call_start, format_tool_result,
         normalize_permission_mode, parse_args, parse_git_status_metadata, permission_policy,
         print_help_to, push_output_block, render_config_report, render_memory_report,
-        render_repl_help, resolve_model_alias, response_to_events, resume_supported_slash_commands,
-        status_context, CliAction, CliOutputFormat, InternalPromptProgressEvent,
-        InternalPromptProgressState, SlashCommand, StatusUsage, DEFAULT_MODEL,
+        render_repl_help, render_unknown_repl_command, resolve_model_alias, response_to_events,
+        resume_supported_slash_commands, slash_command_completion_candidates, status_context,
+        CliAction, CliOutputFormat, InternalPromptProgressEvent, InternalPromptProgressState,
+        SlashCommand, StatusUsage, DEFAULT_MODEL,
     };
     use api::{MessageResponse, OutputContentBlock, Usage};
     use plugins::{PluginTool, PluginToolDefinition, PluginToolPermission};
@@ -4355,7 +4432,7 @@ mod tests {
         let help = commands::render_slash_command_help();
         assert!(help.contains("Slash commands"));
         assert!(help.contains("Tab completes commands inside the REPL."));
-        assert!(help.contains("works with --resume SESSION.json"));
+        assert!(help.contains("available via claw --resume SESSION.json"));
     }
 
     #[test]
@@ -4384,6 +4461,23 @@ mod tests {
         assert!(help.contains("/skills"));
         assert!(help.contains("/exit"));
         assert!(help.contains("Tab cycles slash command matches"));
+    }
+
+    #[test]
+    fn completion_candidates_include_repl_only_exit_commands() {
+        let candidates = slash_command_completion_candidates();
+        assert!(candidates.contains(&"/help".to_string()));
+        assert!(candidates.contains(&"/vim".to_string()));
+        assert!(candidates.contains(&"/exit".to_string()));
+        assert!(candidates.contains(&"/quit".to_string()));
+    }
+
+    #[test]
+    fn unknown_repl_command_suggestions_include_repl_shortcuts() {
+        let rendered = render_unknown_repl_command("exi");
+        assert!(rendered.contains("Unknown slash command"));
+        assert!(rendered.contains("/exit"));
+        assert!(rendered.contains("/help"));
     }
 
     #[test]
