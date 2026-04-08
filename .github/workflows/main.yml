@@ -1,0 +1,22 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+       - uses: actions/checkout@v4
+ 
+       - uses: dtolnay/rust-toolchain@stable
+ 
+       - name: Build
+         working-directory: rust
+         run: cargo build --release -p rusty-claude-cli
+ 
+       - name: Upload artifact
+         uses: actions/upload-artifact@v4
+         with:
+           name: claw-windows-x64
+           path: rust/target/release/claw.exe
